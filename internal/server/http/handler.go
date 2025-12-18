@@ -79,6 +79,25 @@ func httpBackendHandler(services map[string]config.Service, ep config.Endpoint) 
 }
 
 func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
+	reqID := fmt.Sprintf("%x", c.Context().ID())
+	// определяем TTL для этого endpoint
+	ttlToUse := DefaultCacheTTL
+	if ep.CacheTTL != "" {
+		if d, err := time.ParseDuration(ep.CacheTTL); err == nil {
+			ttlToUse = d
+		} else if secs, err := strconv.Atoi(ep.CacheTTL); err == nil {
+			ttlToUse = time.Duration(secs) * time.Second
+		}
+	}
+
+	cacheKey := c.Method() + ":" + c.OriginalURL()
+	if CacheInstance != nil && ttlToUse > 0 {
+		if data, ok, err := CacheInstance.Get(c.UserContext(), cacheKey); err == nil && ok {
+			log.Printf("[req=%s][waiterd][cache] hit key=%s path=%s svc=%s", reqID, cacheKey, c.Path(), svc.Name)
+			return c.SendStream(bytes.NewReader(data))
+		}
+	}
+
 	// таймаут сервиса
 	timeout := 5 * time.Second
 	if svc.Timeout != "" {
@@ -113,6 +132,8 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	}
 	target.RawQuery = rawQuery
 
+	log.Printf("[req=%s][waiterd][call] svc=%s target=%s method=%s", reqID, svc.Name, target.String(), method)
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -125,22 +146,30 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 
 	copyHeaders(c, req)
 
-	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[waiterd] backend %s %s -> %s error: %v", method, target.String(), svc.Name, err)
+		log.Printf("[req=%s][waiterd] backend %s %s -> %s error: %v", reqID, method, target.String(), svc.Name, err)
 		return c.Status(http.StatusBadGateway).SendString("backend unavailable")
 	}
 	defer resp.Body.Close()
 
 	copyRespHeaders(resp, c)
 
-	c.Status(resp.StatusCode)
-	if _, err := io.Copy(c, resp.Body); err != nil {
-		log.Printf("[waiterd] copy response error: %v", err)
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Printf("[req=%s][waiterd] read response error: %v", reqID, readErr)
+		return c.Status(http.StatusBadGateway).SendString("backend read error")
 	}
 
-	log.Printf("[waiterd] %s %s -> svc=%s (%s) status=%d in %s", c.Method(), c.Path(), svc.Name, target.String(), resp.StatusCode, time.Since(start))
+	c.Status(resp.StatusCode)
+	if _, err := c.Write(bodyBytes); err != nil {
+		log.Printf("[req=%s][waiterd] write response error: %v", reqID, err)
+	}
+
+	if CacheInstance != nil && ttlToUse > 0 && resp.StatusCode < 500 {
+		_ = CacheInstance.Set(c.UserContext(), cacheKey, bodyBytes, ttlToUse)
+	}
+
 	return nil
 }
 
@@ -150,6 +179,11 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 
 func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		reqID := fmt.Sprintf("%x", c.Context().ID())
+		logReq := func(format string, args ...any) {
+			log.Printf("[req=%s]"+format, append([]any{reqID}, args...)...)
+		}
+
 		ttlToUse := DefaultCacheTTL
 		if ep.CacheTTL != "" {
 			if d, err := time.ParseDuration(ep.CacheTTL); err == nil {
@@ -162,12 +196,15 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 		cacheKey := c.Method() + ":" + c.OriginalURL()
 		if CacheInstance != nil && ttlToUse > 0 {
 			if data, ok, err := CacheInstance.Get(c.UserContext(), cacheKey); err == nil && ok {
+				logReq("[waiterd][cache] hit key=%s path=%s", cacheKey, c.Path())
 				var anyv any
 				if err := json.Unmarshal(data, &anyv); err == nil {
 					return c.JSON(anyv)
 				}
 				return c.SendString(string(data))
 			}
+		} else if ttlToUse > 0 {
+			logReq("[waiterd][cache] disabled driver or instance nil; path=%s ttl=%s", c.Path(), ttlToUse)
 		}
 
 		perCall := make(map[string]any)
@@ -183,10 +220,12 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 		for _, call := range ep.Calls {
 			call := call
 			g.Go(func() error {
+				startCall := time.Now()
+
 				svc, ok := services[call.Service]
 				if !ok {
 					msg := fmt.Sprintf("unknown service %q", call.Service)
-					log.Printf("[waiterd] aggregate call %s error: %s", call.Name, msg)
+					logReq("[waiterd] aggregate call %s error: %s", call.Name, msg)
 					if failOnError {
 						return errors.New(msg)
 					}
@@ -202,7 +241,7 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 				}
 				if transport != "http" {
 					msg := fmt.Sprintf("grpc in aggregate not implemented for service %q", svc.Name)
-					log.Printf("[waiterd] aggregate call %s error: %s", call.Name, msg)
+					logReq("[waiterd] aggregate call %s error: %s", call.Name, msg)
 					if failOnError {
 						return errors.New(msg)
 					}
@@ -219,6 +258,26 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 					rawQuery = u.RawQuery
 				}
 
+				methodToUse := call.Method
+				if methodToUse == "" {
+					methodToUse = http.MethodGet
+				}
+
+				targetURL := func() string {
+					baseURL := svc.ProxyURL
+					if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+						baseURL = "http://" + baseURL
+					}
+					base, err := url.Parse(baseURL)
+					if err != nil {
+						return baseURL
+					}
+					t := *base
+					t.Path = singleJoinPath(base.Path, resolvedPath)
+					t.RawQuery = rawQuery
+					return t.String()
+				}()
+
 				bodyBytes, status, err := doHTTPCall(
 					gctx,
 					svc,
@@ -228,7 +287,7 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 					nil,
 				)
 				if err != nil {
-					log.Printf("[waiterd] aggregate call %s -> svc=%s error: %v", call.Name, svc.Name, err)
+					logReq("[waiterd] aggregate call %s -> svc=%s error: %v", call.Name, svc.Name, err)
 					if failOnError {
 						return fmt.Errorf("aggregate call %s -> svc=%s error: %w", call.Name, svc.Name, err)
 					}
@@ -240,10 +299,10 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 
 				if status >= 400 {
 					if failOnError {
-						log.Printf("[waiterd] aggregate call %s -> svc=%s returned status=%d -> aggregate will fail", call.Name, svc.Name, status)
+						logReq("[waiterd] aggregate call %s -> svc=%s returned status=%d -> aggregate will fail", call.Name, svc.Name, status)
 						return fmt.Errorf("downstream status %d", status)
 					}
-					log.Printf("[waiterd] downstream call %s -> svc=%s returned status=%d (tolerated)", call.Name, svc.Name, status)
+					logReq("[waiterd] downstream call %s -> svc=%s returned status=%d (tolerated)", call.Name, svc.Name, status)
 				}
 
 				var value any
@@ -270,6 +329,8 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 					value = fmt.Sprintf("status=%d", status)
 				}
 
+				logReq("[waiterd][call] name=%s svc=%s url=%s method=%s status=%d in=%s", call.Name, svc.Name, targetURL, methodToUse, status, time.Since(startCall))
+
 				mu.Lock()
 				perCall[call.Name] = value
 				if status >= 400 {
@@ -282,7 +343,7 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 		}
 
 		if err := g.Wait(); err != nil {
-			log.Printf("[waiterd] aggregate error: %v", err)
+			logReq("[waiterd] aggregate error: %v", err)
 			return c.Status(http.StatusBadGateway).SendString("backend error in aggregate")
 		}
 
@@ -327,63 +388,11 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 			}
 		}
 		if len(errs) > 0 {
-			log.Printf("[waiterd] aggregate completed with downstream errors: %s", strings.Join(errs, ", "))
+			logReq("[waiterd] aggregate completed with downstream errors: %s", strings.Join(errs, ", "))
 		}
 
 		return c.JSON(final)
 	}
-}
-
-func decodeBody(body []byte, mapping map[string]string) any {
-	if len(mapping) == 0 {
-		var anyJSON any
-		if err := json.Unmarshal(body, &anyJSON); err == nil {
-			return anyJSON
-		}
-		return string(body)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return string(body)
-	}
-
-	mapped := make(map[string]any)
-	for outKey, jsonField := range mapping {
-		if v, ok := decoded[jsonField]; ok {
-			mapped[outKey] = v
-		}
-	}
-	return mapped
-}
-
-func buildAggregateResponse(mapping map[string]string, perCall map[string]any) any {
-	if len(mapping) == 0 {
-		return perCall
-	}
-
-	out := make(map[string]any)
-	for outKey, expr := range mapping {
-		parts := strings.SplitN(expr, ".", 2)
-		callName := parts[0]
-		callVal, ok := perCall[callName]
-		if !ok {
-			continue
-		}
-
-		if len(parts) == 1 {
-			out[outKey] = callVal
-			continue
-		}
-
-		fieldName := parts[1]
-		if m, ok := callVal.(map[string]any); ok {
-			if v, ok2 := m[fieldName]; ok2 {
-				out[outKey] = v
-			}
-		}
-	}
-	return out
 }
 
 // ======================
@@ -553,20 +562,5 @@ func copyRespHeaders(resp *http.Response, c *fiber.Ctx) {
 		for _, v := range vals {
 			c.Set(k, v)
 		}
-	}
-}
-
-func isEmptyValue(v any) bool {
-	switch val := v.(type) {
-	case nil:
-		return true
-	case string:
-		return strings.TrimSpace(val) == ""
-	case map[string]any:
-		return len(val) == 0
-	case []any:
-		return len(val) == 0
-	default:
-		return false
 	}
 }

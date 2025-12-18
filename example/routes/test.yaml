@@ -1,13 +1,13 @@
 endpoints:
   - path: /api/test
+    cache_ttl: 60s
     method: GET
     backend:
       service: test
       path: /info
       method: GET
   - path: /posts/{id}
-    cache_ttl: "1m"
-    fail_on_error: true
+    cache_ttl: 120s
     middlewares: ["auth"]
     method: GET
     calls:
