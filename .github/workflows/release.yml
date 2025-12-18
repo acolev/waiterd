@@ -26,7 +26,7 @@ jobs:
       - name: Build
         run: |
           go mod download
-          go build -v ./cmd
+          go build -v ./dist
 
       - name: Run tests
         run: |
