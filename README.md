@@ -35,7 +35,7 @@ waiterd --help
 ## Запуск локально
 ```bash
 cp example/config.v2.yaml config.yaml   # или v1
-WAIT_ERD_ENV=dev \                      # опционально, если используешь includes
+WAITERD_ENV=dev \                        # если в конфиге есть includes с {env}, подставится .dev/.prod и т.п. (по умолчанию dev)
 GATEWAY_ADDR=:8080 \                    # при необходимости
 ./dist/waiterd --config config.yaml
 ```
