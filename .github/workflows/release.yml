@@ -26,7 +26,8 @@ jobs:
       - name: Build
         run: |
           go mod download
-          go build -v ./dist
+          mkdir -p dist
+          go build -v -o dist/waiterd ./cmd
 
       - name: Run tests
         run: |
@@ -45,5 +46,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: waiterd-${{ github.ref_name }}
-          path: cmd/main
-
+          path: dist/waiterd
