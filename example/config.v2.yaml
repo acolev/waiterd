@@ -1,0 +1,11 @@
+version: "v2"
+gateway:
+  address: ":8080"
+
+cache:
+  driver: "memory"
+  ttl: "5s"
+
+includes:
+  - "services/*.{env}.yaml"
+  - "routes/*.yaml"

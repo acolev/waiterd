@@ -1,0 +1,42 @@
+version: "v1"
+gateway:
+  address: ":8080"
+
+cache:
+  driver: "memory"
+  ttl: "5s"
+
+services:
+  - name: jsonp
+    proxy_url: "https://jsonplaceholder.typicode.com/"
+    timeout: "2s"
+    transport: "http"
+
+endpoints:
+  - path: /api/test
+    method: GET
+    backend:
+      service: test
+      path: /info
+      method: GET
+  - path: /posts/{id}
+    cache_ttl: 1000
+    fail_on_error: true
+    middlewares: [ "auth" ]
+    method: GET
+    calls:
+      - name: test_service
+        service: jsonp
+        path: /info
+        method: GET
+      - name: post
+        service: jsonp
+        path: /posts/{id}
+        method: GET
+        mapping:
+          title: "title"
+          body: "body"
+    response_mapping:
+      title: "post.title"
+      description: "post.body"
+      message: "test_service"

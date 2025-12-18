@@ -1,0 +1,10 @@
+services:
+  - name: test
+    proxy_url: "http://127.0.0.1:9001"
+    timeout: "2s"
+    transport: "http"
+
+  - name: jsonp
+    proxy_url: "https://jsonplaceholder.typicode.com/"
+    timeout: "2s"
+    transport: "http"
