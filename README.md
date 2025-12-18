@@ -24,13 +24,15 @@ waiterd --help
 ```
 
 ## Конфиг и окружение
-- Основной конфиг: YAML (v1/v2). Примеры: `example/config.v1.yaml`, `example/config.v2.yaml`. Скопируй нужный вариант рядом с бинарём, например `cp example/config.v2.yaml config.yaml`.
-- ENV переменные перекрывают YAML (см. `internal/config/config.go`). Основные:
-  - `GATEWAY_ADDR` — адрес слушателя (по умолчанию `:` → 0.0.0.0:80 в Fiber). Можно задать `:8080`.
-  - `CACHE_DRIVER` — `memory` или `redis` (по умолчанию memory/выключен). Для Redis также: `CACHE_HOST`, `CACHE_PORT`, `CACHE_DB`, `CACHE_PASSWORD`, `CACHE_TTL`.
-  - `GATEWAY_READ_TIMEOUT`, `GATEWAY_WRITE_TIMEOUT`, `GATEWAY_IDLE_TIMEOUT`, `GATEWAY_SHUTDOWN_TIMEOUT` — таймауты сервера.
-- Если не хочешь копировать пример: можно запускать с `--config` inline (поддерживается `config.Build`): `waiterd --config="$(cat example/config.v2.yaml)"` или указать путь к файлу.
-- Без `.env`/ENV всё равно стартует: возьмёт значения из YAML и дефолты (адрес `:`, cache TTL 0 → кеш отключён).
+- Основной YAML-конфиг: см. примеры `example/config.v1.yaml` и `example/config.v2.yaml`. Скопируй нужный: `cp example/config.v2.yaml config.yaml` (или v1).
+- Перекрытия через ENV (см. `internal/config/config.go`):
+  - `GATEWAY_ADDR` (по умолчанию `:` → 0.0.0.0:80). Пример: `:8080`.
+  - Кэш: `CACHE_DRIVER=memory|redis` (по умолчанию memory/выкл). Для Redis: `CACHE_HOST`, `CACHE_PORT`, `CACHE_DB`, `CACHE_PASSWORD`, `CACHE_TTL`.
+  - Таймауты сервера: `GATEWAY_READ_TIMEOUT`, `GATEWAY_WRITE_TIMEOUT`, `GATEWAY_IDLE_TIMEOUT`, `GATEWAY_SHUTDOWN_TIMEOUT`.
+  - Инклюды по окружению: `WAITERD_ENV=dev|prod` — подставляет `{env}` в includes (по умолчанию `dev`).
+- Запуск с файлом: `waiterd --config config.yaml`.
+- Запуск без файла (inline): `waiterd --config "$(cat example/config.v2.yaml)"`.
+- `.env` не обязателен: без ENV возьмёт YAML и дефолты (адрес `:`, кэш TTL=0 → кэш выключен).
 
 ## Запуск локально
 ```bash
