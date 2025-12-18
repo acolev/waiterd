@@ -6,13 +6,13 @@ endpoints:
       path: /info
       method: GET
   - path: /posts/{id}
-    cache_ttl: 1000
+    cache_ttl: "1m"
     fail_on_error: true
     middlewares: ["auth"]
     method: GET
     calls:
-      - name: test_service
-        service: jsonp
+      - name: test
+        service: test
         path: /info
         method: GET
       - name: post
@@ -25,4 +25,5 @@ endpoints:
     response_mapping:
       title: "post.title"
       description: "post.body"
-      message: "test_service"
+      message: "test"
+

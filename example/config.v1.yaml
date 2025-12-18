@@ -7,8 +7,13 @@ cache:
   ttl: "5s"
 
 services:
+  - name: test
+    proxy_url: "http://127.0.0.1:9001"
+    timeout: "2s"
+    transport: "http"
+
   - name: jsonp
-    proxy_url: "https://jsonplaceholder.typicode.com/"
+    proxy_url: "https://jsonplaceholder.typicode.com"
     timeout: "2s"
     transport: "http"
 
@@ -22,7 +27,7 @@ endpoints:
   - path: /posts/{id}
     cache_ttl: 1000
     fail_on_error: true
-    middlewares: [ "auth" ]
+    middlewares: ["auth"]
     method: GET
     calls:
       - name: test_service
@@ -40,3 +45,5 @@ endpoints:
       title: "post.title"
       description: "post.body"
       message: "test_service"
+
+
