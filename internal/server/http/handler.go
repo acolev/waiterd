@@ -13,7 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/sync/errgroup"
@@ -79,7 +82,7 @@ func httpBackendHandler(services map[string]config.Service, ep config.Endpoint) 
 }
 
 func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
-	reqID := fmt.Sprintf("%x", c.Context().ID())
+	logReq := reqLogger(c)
 	// определяем TTL для этого endpoint
 	ttlToUse := DefaultCacheTTL
 	if ep.CacheTTL != "" {
@@ -93,7 +96,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	cacheKey := c.Method() + ":" + c.OriginalURL()
 	if CacheInstance != nil && ttlToUse > 0 {
 		if data, ok, err := CacheInstance.Get(c.UserContext(), cacheKey); err == nil && ok {
-			log.Printf("[req=%s][waiterd][cache] hit key=%s path=%s svc=%s", reqID, cacheKey, c.Path(), svc.Name)
+			logReq("[waiterd][cache] hit key=%s path=%s svc=%s", cacheKey, c.Path(), svc.Name)
 			return c.SendStream(bytes.NewReader(data))
 		}
 	}
@@ -113,7 +116,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	}
 	base, err := url.Parse(baseURL)
 	if err != nil {
-		log.Printf("[waiterd] invalid proxy_url %q for service %q: %v", svc.ProxyURL, svc.Name, err)
+		logReq("[waiterd] invalid proxy_url %q for service %q: %v", svc.ProxyURL, svc.Name, err)
 		return c.Status(http.StatusInternalServerError).SendString("invalid backend url")
 	}
 
@@ -132,7 +135,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	}
 	target.RawQuery = rawQuery
 
-	log.Printf("[req=%s][waiterd][call] svc=%s target=%s method=%s", reqID, svc.Name, target.String(), method)
+	logReq("[waiterd][call] svc=%s target=%s method=%s", svc.Name, target.String(), method)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -140,7 +143,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	body := bytes.NewReader(c.Body())
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
-		log.Printf("[waiterd] new backend request error: %v", err)
+		logReq("[waiterd] new backend request error: %v", err)
 		return c.Status(http.StatusInternalServerError).SendString("backend request build error")
 	}
 
@@ -148,7 +151,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[req=%s][waiterd] backend %s %s -> %s error: %v", reqID, method, target.String(), svc.Name, err)
+		logReq("[waiterd] backend %s %s -> %s error: %v", method, target.String(), svc.Name, err)
 		return c.Status(http.StatusBadGateway).SendString("backend unavailable")
 	}
 	defer resp.Body.Close()
@@ -157,13 +160,13 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 
 	bodyBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		log.Printf("[req=%s][waiterd] read response error: %v", reqID, readErr)
+		logReq("[waiterd] read response error: %v", readErr)
 		return c.Status(http.StatusBadGateway).SendString("backend read error")
 	}
 
 	c.Status(resp.StatusCode)
 	if _, err := c.Write(bodyBytes); err != nil {
-		log.Printf("[req=%s][waiterd] write response error: %v", reqID, err)
+		logReq("[waiterd] write response error: %v", err)
 	}
 
 	if CacheInstance != nil && ttlToUse > 0 && resp.StatusCode < 500 {
@@ -179,10 +182,7 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 
 func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		reqID := fmt.Sprintf("%x", c.Context().ID())
-		logReq := func(format string, args ...any) {
-			log.Printf("[req=%s]"+format, append([]any{reqID}, args...)...)
-		}
+		logReq := reqLogger(c)
 
 		ttlToUse := DefaultCacheTTL
 		if ep.CacheTTL != "" {
@@ -562,5 +562,30 @@ func copyRespHeaders(resp *http.Response, c *fiber.Ctx) {
 		for _, v := range vals {
 			c.Set(k, v)
 		}
+	}
+}
+
+var (
+	reqStartUnix = time.Now().UnixNano()
+	reqCounter   uint64
+)
+
+// makeReqID returns external X-Request-Id if provided, otherwise generates unique per-process hex id (start-timestamp + counter).
+func makeReqID(c *fiber.Ctx) string {
+	if hdr := c.Get("X-Request-Id"); hdr != "" {
+		return hdr
+	}
+	if v, err := uuid.NewRandom(); err == nil {
+		return v.String()
+	}
+	n := atomic.AddUint64(&reqCounter, 1)
+	return fmt.Sprintf("%x-%x", reqStartUnix, n)
+}
+
+// reqLogger returns printf-style logger prefixed with request id.
+func reqLogger(c *fiber.Ctx) func(format string, args ...any) {
+	reqID := makeReqID(c)
+	return func(format string, args ...any) {
+		log.Printf("[req=%s]"+format, append([]any{reqID}, args...)...)
 	}
 }
