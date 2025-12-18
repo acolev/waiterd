@@ -3,6 +3,7 @@ package httpserver
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,6 +20,9 @@ import (
 func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	logReq := reqLogger(c)
 
+	// Safety: cache only GET/HEAD by default. Otherwise key must include request body/hash.
+	cacheableMethod := c.Method() == http.MethodGet || c.Method() == http.MethodHead
+
 	ttlToUse := DefaultCacheTTL
 	if ep.CacheTTL != "" {
 		if d, err := time.ParseDuration(ep.CacheTTL); err == nil {
@@ -29,9 +33,22 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 	}
 
 	cacheKey := c.Method() + ":" + c.OriginalURL()
-	if CacheInstance != nil && ttlToUse > 0 {
+	if CacheInstance != nil && ttlToUse > 0 && cacheableMethod {
 		if data, ok, err := CacheInstance.Get(c.UserContext(), cacheKey); err == nil && ok {
-			logReq("[waiterd][cache] hit key=%s path=%s svc=%s", cacheKey, c.Path(), svc.Name)
+			var cached cachedHTTPResponse
+			if err := json.Unmarshal(data, &cached); err == nil && cached.Status != 0 {
+				if len(cached.Headers) > 0 {
+					for k, v := range cached.Headers {
+						c.Set(k, v)
+					}
+				}
+				c.Status(cached.Status)
+				logReq("[waiterd][cache] hit key=%s path=%s svc=%s status=%d", cacheKey, c.Path(), svc.Name, cached.Status)
+				return c.SendStream(bytes.NewReader(cached.Body))
+			}
+
+			// Backward compatibility: old cache entries were raw body.
+			logReq("[waiterd][cache] hit(key=%s) legacy-body path=%s svc=%s", cacheKey, c.Path(), svc.Name)
 			return c.SendStream(bytes.NewReader(data))
 		}
 	}
@@ -86,8 +103,15 @@ func proxyHTTP(c *fiber.Ctx, svc config.Service, ep config.Endpoint) error {
 		logReq("[waiterd] write response error: %v", err)
 	}
 
-	if CacheInstance != nil && ttlToUse > 0 && resp.StatusCode < 500 {
-		_ = CacheInstance.Set(c.UserContext(), cacheKey, bodyBytes, ttlToUse)
+	if CacheInstance != nil && ttlToUse > 0 && cacheableMethod && resp.StatusCode < 500 {
+		cached := cachedHTTPResponse{
+			Status:  resp.StatusCode,
+			Headers: extractCacheableHeaders(resp.Header),
+			Body:    bodyBytes,
+		}
+		if b, err := json.Marshal(cached); err == nil {
+			_ = CacheInstance.Set(c.UserContext(), cacheKey, b, ttlToUse)
+		}
 	}
 
 	return nil

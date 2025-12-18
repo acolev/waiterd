@@ -13,7 +13,7 @@ import (
 )
 
 // doHTTPCall делает HTTP вызов к сервису с respect timeout и возвращает тело+статус.
-func doHTTPCall(ctx context.Context, svc config.Service, method string, path string, rawQuery string, body io.Reader) ([]byte, int, error) {
+func doHTTPCall(ctx context.Context, svc config.Service, method string, path string, rawQuery string, body io.Reader, headers http.Header) ([]byte, int, error) {
 	timeout := 5 * time.Second
 	if svc.Timeout != "" {
 		if d, err := time.ParseDuration(svc.Timeout); err == nil {
@@ -43,6 +43,13 @@ func doHTTPCall(ctx context.Context, svc config.Service, method string, path str
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("new request: %w", err)
+	}
+	if headers != nil {
+		for k, vals := range headers {
+			for _, v := range vals {
+				req.Header.Add(k, v)
+			}
+		}
 	}
 
 	resp, err := http.DefaultClient.Do(req)

@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -71,6 +72,23 @@ func TestProxyHTTP_CachesResponse(t *testing.T) {
 	}
 	if atomic.LoadInt32(&cache.setCount) != 1 {
 		t.Fatalf("cache setCount=%d want 1", cache.setCount)
+	}
+
+	// new cache format should be JSON-encoded cachedHTTPResponse
+	key := "GET:/ping"
+	if _, ok := cache.store[key]; !ok {
+		// key includes OriginalURL; for this test OriginalURL is '/ping'
+		for k := range cache.store {
+			key = k
+			break
+		}
+	}
+	var cached cachedHTTPResponse
+	if err := json.Unmarshal(cache.store[key], &cached); err != nil {
+		t.Fatalf("cache value is not cachedHTTPResponse json: %v", err)
+	}
+	if string(cached.Body) != "pong" {
+		t.Fatalf("cached body=%q", string(cached.Body))
 	}
 
 	// second call should hit cache, no extra backend hits

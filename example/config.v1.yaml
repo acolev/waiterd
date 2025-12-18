@@ -2,10 +2,6 @@ version: "v1"
 gateway:
   address: ":8080"
 
-cache:
-  driver: "memory"
-  ttl: "5s"
-
 services:
   - name: test
     proxy_url: "http://127.0.0.1:9001"

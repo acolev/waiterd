@@ -18,8 +18,12 @@ func SetupCache(cfg config.Cache) (func(), error) {
 	DefaultCacheTTL = parseTTL(cfg.TTL)
 
 	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
+	if driver == "memory" {
+		CacheInstance = newMemoryCacheAdapter()
+		return func() {}, nil
+	}
 	if driver != "redis" {
-		// memory/disabled — leave CacheInstance nil
+		// disabled/unknown — leave CacheInstance nil
 		return func() {}, nil
 	}
 

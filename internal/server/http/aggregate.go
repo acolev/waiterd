@@ -91,6 +91,7 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 
 				targetURL := buildTargetURL(svc.ProxyURL, resolvedPath, rawQuery)
 
+				fwd := forwardHeadersFromFiber(c)
 				bodyBytes, status, err := doHTTPCall(
 					gctx,
 					svc,
@@ -98,6 +99,7 @@ func makeAggregateHandler(services map[string]config.Service, ep config.Endpoint
 					resolvedPath,
 					rawQuery,
 					nil,
+					fwd,
 				)
 				if err != nil {
 					logReq("[waiterd] aggregate call %s -> svc=%s error: %v", call.Name, svc.Name, err)

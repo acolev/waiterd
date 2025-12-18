@@ -3,6 +3,7 @@ package httpserver
 import (
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 
@@ -16,7 +17,9 @@ var pathParamRegex = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
 // RegisterRoutes строит маршруты на основе конфигурации.
 func RegisterRoutes(app *fiber.App, cfg *config.FinalConfig) {
 	app.Get("/health", func(c *fiber.Ctx) error { return c.SendString("ok") })
-	app.Get("/debug/config", func(c *fiber.Ctx) error { return c.JSON(cfg) })
+	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) == "dev" {
+		app.Get("/debug/config", func(c *fiber.Ctx) error { return c.JSON(cfg) })
+	}
 
 	services := indexServices(cfg.Services)
 
